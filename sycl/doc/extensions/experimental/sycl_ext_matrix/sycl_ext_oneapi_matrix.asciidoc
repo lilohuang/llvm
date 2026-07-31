@@ -1359,16 +1359,18 @@ the `ext_oneapi_hip` backend are represented in the following
 table. In this architecture's implementation, A and B matrices must have the same type. 
 Similarly, C and D matrices must share the same type.
 
-IMPORTANT: The supported instructions may be run on GFX90A (MI200, MI210, MI250 and MI250X GPUs)
-architecture. When compiling for the `ext_oneapi_hip` backend the 
-target arch backend flag, `-fsycl-targets=amd_gpu_gfx90a`, must
-be used. An attempt to run the compiled code on an unsupported architecture will throw an error. 
+IMPORTANT: The supported instructions may be run on GFX90A (MI200, MI210,
+MI250 and MI250X GPUs) or the GFX1100, GFX1101 and GFX1102 RDNA 3
+architectures. When compiling for the `ext_oneapi_hip` backend, the matching
+target arch flag, such as `-fsycl-targets=amd_gpu_gfx90a` or
+`-fsycl-targets=amd_gpu_gfx1102`, must be used. An attempt to run the compiled
+code on an unsupported architecture will throw an error.
 
 
 [frame="none",options="header"]
 |======================
-| A and B type | C and D type | M | N | K
-.2+| `matrix_type::fp16`  .2+| `matrix_type::fp32`
+| Architecture | A and B type | C and D type | M | N | K
+.7+| GFX90A .2+| `matrix_type::fp16`  .2+| `matrix_type::fp32`
 |32 |32 |8 
 |16 |16 |16
 .2+| `matrix_type::sint8`  .2+| `matrix_type::sint32`
@@ -1379,6 +1381,10 @@ be used. An attempt to run the compiled code on an unsupported architecture will
 |16 |16 |16
 .1+|`matrix_type::fp64`  .1+| `matrix_type::fp64`
 |16 |16 |4
+.3+| GFX1100, GFX1101, GFX1102
+| `matrix_type::fp16` | `matrix_type::fp32` |16 |16 |16
+| `matrix_type::bf16` | `matrix_type::fp32` |16 |16 |16
+| `matrix_type::sint8` | `matrix_type::sint32` |16 |16 |16
 |======================
 
 === Revision History

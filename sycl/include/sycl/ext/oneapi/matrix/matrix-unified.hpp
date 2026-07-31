@@ -13,7 +13,8 @@
 #if defined(__SYCL_DEVICE_ONLY__)
 #if defined(__NVPTX__)
 #include "matrix-tensorcores.hpp"
-#elif defined(__gfx90a__)
+#elif defined(__gfx90a__) || defined(__gfx1100__) || defined(__gfx1101__) ||   \
+    defined(__gfx1102__)
 #include "matrix-hip.hpp"
 #endif // defined(__NVPTX__)
 #endif // defined(__SYCL_DEVICE_ONLY__)
@@ -45,7 +46,7 @@ struct joint_matrix {
 #if defined(__NVPTX__)
   sycl::ext::oneapi::detail::joint_matrix_cuda<T, Use, Rows, Cols, Layout>
       matrix_impl;
-#elif defined(__HIP_PLATFORM_AMD_MFMA__)
+#elif defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   sycl::ext::oneapi::detail::joint_matrix_hip<T, Use, Rows, Cols, Layout>
       matrix_impl;
 #elif defined(__SPIR__) || defined(__SPIRV__)
@@ -54,7 +55,7 @@ struct joint_matrix {
       *spvm;
 #else
   static_assert(false, "The joint_matrix API is only supported by the Intel, "
-                       "CUDA and HIP (GFX90A) backends");
+                       "CUDA and supported HIP backends");
 #endif // defined(__NVPTX__)
 #endif // defined(__SYCL_DEVICE_ONLY__)
 
@@ -85,7 +86,7 @@ inline __SYCL_ALWAYS_INLINE void
 joint_matrix_apply(Group sg, joint_matrix<Group, T, Use, M, N, Layout> &jm,
                    F &&lambda) {
 #if defined(__SYCL_DEVICE_ONLY__)
-#if defined(__NVPTX__) || defined(__HIP_PLATFORM_AMD_MFMA__)
+#if defined(__NVPTX__) || defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   (void)sg;
   for (int i = 0; i < jm.matrix_impl.wi_marray.size(); i++) {
     lambda(jm.matrix_impl.wi_marray[i]);
@@ -118,7 +119,7 @@ joint_matrix_apply(Group sg, joint_matrix<Group, T0, Use, M, N, Layout> &jm0,
                    joint_matrix<Group, T1, Use, M, N, Layout> &jm1,
                    F &&lambda) {
 #if defined(__SYCL_DEVICE_ONLY__)
-#if defined(__NVPTX__) || defined(__HIP_PLATFORM_AMD_MFMA__)
+#if defined(__NVPTX__) || defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   (void)sg;
   for (int i = 0; i < jm0.matrix_impl.wi_marray.size(); i++) {
     lambda(jm0.matrix_impl.wi_marray[i], jm1.matrix_impl.wi_marray[i]);
@@ -158,7 +159,7 @@ joint_matrix_fill(Group,
                   joint_matrix<Group, T, Use, NumRows, NumCols, Layout> &res,
                   const T2 &v) {
 #if defined(__SYCL_DEVICE_ONLY__)
-#if defined(__NVPTX__) || defined(__HIP_PLATFORM_AMD_MFMA__)
+#if defined(__NVPTX__) || defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   res.matrix_impl.wi_marray = v;
 #else
   using storage_element_type =
@@ -196,7 +197,7 @@ inline __SYCL_ALWAYS_INLINE void joint_matrix_load(
   (void)sg;
   sycl::ext::oneapi::detail::load_accumulator_cuda(res.matrix_impl, src, stride,
                                                    Layout);
-#elif defined(__HIP_PLATFORM_AMD_MFMA__)
+#elif defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   sycl::ext::oneapi::detail::load_accumulator_hip(res.matrix_impl, src, stride,
                                                   Layout, sg);
 #else
@@ -240,7 +241,7 @@ joint_matrix_load(Group sg,
   sycl::ext::oneapi::detail::load_multiplicand_cuda<S, T, NumRows, NumCols, Use,
                                                     Layout, Space>(
       res.matrix_impl, src, stride);
-#elif defined(__HIP_PLATFORM_AMD_MFMA__)
+#elif defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   sycl::ext::oneapi::detail::load_multiplicand_hip<Group, S, T, NumRows,
                                                    NumCols, Use, Layout, Space>(
       res.matrix_impl, src, stride, sg);
@@ -279,7 +280,7 @@ inline __SYCL_ALWAYS_INLINE void joint_matrix_load(
   (void)sg;
   throw exception(make_error_code(errc::runtime),
                   "Use joint_matrix_load on multi_ptr on Nvidia device.");
-#elif defined(__HIP_PLATFORM_AMD_MFMA__)
+#elif defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   throw exception(make_error_code(errc::runtime),
                   "Use joint_matrix_load on multi_ptr on AMD device.");
 #else
@@ -317,7 +318,7 @@ inline __SYCL_ALWAYS_INLINE void joint_matrix_load(
   (void)sg;
   throw exception(make_error_code(errc::runtime),
                   "Use joint_matrix_load on multi_ptr on Nvidia device.");
-#elif defined(__HIP_PLATFORM_AMD_MFMA__)
+#elif defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   throw exception(make_error_code(errc::runtime),
                   "Use joint_matrix_load on multi_ptr on AMD device.");
 #else
@@ -356,7 +357,7 @@ inline __SYCL_ALWAYS_INLINE void joint_matrix_store(
   sycl::ext::oneapi::detail::joint_matrix_store_cuda<T, NumRows, NumCols,
                                                      Space>(
       src.matrix_impl, dst, stride, Layout);
-#elif defined(__HIP_PLATFORM_AMD_MFMA__)
+#elif defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   sycl::ext::oneapi::detail::joint_matrix_store_hip<Group, T, NumRows, NumCols,
                                                     Space>(src.matrix_impl, dst,
                                                            stride, Layout, sg);
@@ -395,7 +396,7 @@ inline __SYCL_ALWAYS_INLINE void joint_matrix_store(
   (void)sg;
   throw exception(make_error_code(errc::runtime),
                   "Use joint_matrix_store on multi_ptr on Nvidia device.");
-#elif defined(__HIP_PLATFORM_AMD_MFMA__)
+#elif defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   throw exception(make_error_code(errc::runtime),
                   "Use joint_matrix_store on multi_ptr on AMD device.");
 #else
@@ -450,7 +451,7 @@ inline __SYCL_ALWAYS_INLINE void joint_matrix_mad(
     assert(false && "Ta != Tb : In the CUDA backend joint_matrix_mad "
                     "requires that joint_matrix data types Ta and Tb match");
   }
-#elif defined(__HIP_PLATFORM_AMD_MFMA__)
+#elif defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   if constexpr (std::is_same<Ta, Tb>::value) {
     sycl::ext::oneapi::detail::joint_matrix_mad_hip<Ta, Tc, M, K, N, LayoutA,
                                                     LayoutB>(
@@ -481,7 +482,7 @@ void joint_matrix_copy(
     Group sg, joint_matrix<Group, T1, Use1, Rows, Cols, Layout1> &src,
     joint_matrix<Group, T2, Use2, Rows, Cols, Layout2> &dst) {
 #if defined(__SYCL_DEVICE_ONLY__)
-#if defined(__NVPTX__) || defined(__HIP_PLATFORM_AMD_MFMA__)
+#if defined(__NVPTX__) || defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   (void)sg;
   dst.matrix_impl.wi_marray = src.matrix_impl.wi_marray;
 #else
@@ -553,7 +554,7 @@ joint_matrix_prefetch(Group sg, T *Ptr, size_t stride,
   (void)properties;
   throw exception(make_error_code(errc::runtime),
                   "joint_matrix_prefetch is not supported on Nvidia device.");
-#elif defined(__HIP_PLATFORM_AMD_MFMA__)
+#elif defined(__SYCL_HIP_MATRIX_SUPPORTED__)
   (void)sg;
   (void)properties;
   throw exception(make_error_code(errc::runtime),

@@ -2251,6 +2251,17 @@ public:
           {0, 0, 0, 16, 16, 4, matrix_type::fp64, matrix_type::fp64,
            matrix_type::fp64, matrix_type::fp64},
       };
+    else if ((architecture::amd_gpu_gfx1100 == DeviceArch) ||
+             (architecture::amd_gpu_gfx1101 == DeviceArch) ||
+             (architecture::amd_gpu_gfx1102 == DeviceArch))
+      return {
+          {0, 0, 0, 16, 16, 16, matrix_type::fp16, matrix_type::fp16,
+           matrix_type::fp32, matrix_type::fp32},
+          {0, 0, 0, 16, 16, 16, matrix_type::bf16, matrix_type::bf16,
+           matrix_type::fp32, matrix_type::fp32},
+          {0, 0, 0, 16, 16, 16, matrix_type::sint8, matrix_type::sint8,
+           matrix_type::sint32, matrix_type::sint32},
+      };
     else if (backend::ext_oneapi_cuda == CurrentBackend) {
       if (get_device_architecture_category(DeviceArch) !=
           arch_category::nvidia_gpu)

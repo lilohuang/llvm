@@ -16,15 +16,23 @@
 #include <sycl/marray.hpp>
 #include <sycl/multi_ptr.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <type_traits>
 
+#if defined(__gfx90a__)
 #define __HIP_PLATFORM_AMD_MFMA__
+#endif
+#define __SYCL_HIP_MATRIX_SUPPORTED__
 
 namespace sycl {
 inline namespace _V1 {
 namespace ext {
 namespace oneapi {
 namespace detail {
+
+#if defined(__gfx90a__)
 
 constexpr int WAVEFRONT_SIZE = 64;
 
@@ -345,7 +353,6 @@ void joint_matrix_mad_hip(
     const joint_matrix_hip<
         Tc, sycl::ext::oneapi::experimental::matrix::use::accumulator, M, N,
         sycl::ext::oneapi::experimental::matrix::layout::dynamic> &C) {
-#ifdef __gfx90a__
   if constexpr (std::is_same_v<Tm, sycl::half>) {
     if constexpr (M == 16 && N == 16) {
       auto result = __builtin_amdgcn_mfma_f32_16x16x16f16(
@@ -396,8 +403,232 @@ void joint_matrix_mad_hip(
       std::memcpy(&D.wi_marray, &result, 16 * sizeof(int32_t));
     }
   }
-#endif // __gfx90a__
 }
+
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__)
+
+constexpr int GFX11_WAVEFRONT_SIZE = 32;
+constexpr int GFX11_WMMA_TILE_SIZE = 16;
+
+template <typename T, sycl::ext::oneapi::experimental::matrix::use Use,
+          size_t Rows, size_t Cols,
+          sycl::ext::oneapi::experimental::matrix::layout Layout =
+              sycl::ext::oneapi::experimental::matrix::layout::dynamic,
+          typename Cond = void>
+struct joint_matrix_hip;
+
+#define __SYCL_GFX11_JOINT_MATRIX_MULTIPLICAND(TYPE, USE)                      \
+  template <sycl::ext::oneapi::experimental::matrix::layout Layout>            \
+  struct joint_matrix_hip<                                                     \
+      TYPE, sycl::ext::oneapi::experimental::matrix::use::USE,                 \
+      GFX11_WMMA_TILE_SIZE, GFX11_WMMA_TILE_SIZE, Layout,                      \
+      typename std::enable_if_t<                                               \
+          Layout ==                                                            \
+              sycl::ext::oneapi::experimental::matrix::layout::row_major ||    \
+          Layout ==                                                            \
+              sycl::ext::oneapi::experimental::matrix::layout::col_major>> {   \
+    sycl::marray<TYPE, GFX11_WMMA_TILE_SIZE> wi_marray{};                      \
+  };
+
+__SYCL_GFX11_JOINT_MATRIX_MULTIPLICAND(half, a)
+__SYCL_GFX11_JOINT_MATRIX_MULTIPLICAND(half, b)
+__SYCL_GFX11_JOINT_MATRIX_MULTIPLICAND(bfloat16, a)
+__SYCL_GFX11_JOINT_MATRIX_MULTIPLICAND(bfloat16, b)
+__SYCL_GFX11_JOINT_MATRIX_MULTIPLICAND(int8_t, a)
+__SYCL_GFX11_JOINT_MATRIX_MULTIPLICAND(int8_t, b)
+
+#undef __SYCL_GFX11_JOINT_MATRIX_MULTIPLICAND
+
+#define __SYCL_GFX11_JOINT_MATRIX_ACCUMULATOR(TYPE)                            \
+  template <>                                                                  \
+  struct joint_matrix_hip<                                                     \
+      TYPE, sycl::ext::oneapi::experimental::matrix::use::accumulator,         \
+      GFX11_WMMA_TILE_SIZE, GFX11_WMMA_TILE_SIZE,                              \
+      sycl::ext::oneapi::experimental::matrix::layout::dynamic> {              \
+    sycl::marray<TYPE, (GFX11_WMMA_TILE_SIZE * GFX11_WMMA_TILE_SIZE) /         \
+                           GFX11_WAVEFRONT_SIZE>                               \
+        wi_marray{};                                                           \
+  };
+
+__SYCL_GFX11_JOINT_MATRIX_ACCUMULATOR(float)
+__SYCL_GFX11_JOINT_MATRIX_ACCUMULATOR(int32_t)
+
+#undef __SYCL_GFX11_JOINT_MATRIX_ACCUMULATOR
+
+template <sycl::ext::oneapi::experimental::matrix::layout Layout, typename S,
+          typename T, access::address_space Space,
+          access::decorated IsDecorated, typename Group>
+void load_accumulator_gfx11(
+    joint_matrix_hip<
+        S, sycl::ext::oneapi::experimental::matrix::use::accumulator,
+        GFX11_WMMA_TILE_SIZE, GFX11_WMMA_TILE_SIZE,
+        sycl::ext::oneapi::experimental::matrix::layout::dynamic> &res,
+    multi_ptr<T, Space, IsDecorated> src, size_t stride, Group &sg) {
+  const size_t Lane = sg.get_local_linear_id();
+  const size_t Col = Lane % GFX11_WMMA_TILE_SIZE;
+  const size_t RowOffset = Lane / GFX11_WMMA_TILE_SIZE;
+
+  for (size_t I = 0; I < res.wi_marray.size(); ++I) {
+    const size_t Row = 2 * I + RowOffset;
+    if constexpr (Layout ==
+                  sycl::ext::oneapi::experimental::matrix::layout::row_major)
+      res.wi_marray[I] = src[Row * stride + Col];
+    else
+      res.wi_marray[I] = src[Col * stride + Row];
+  }
+}
+
+template <
+    typename Group, typename S, typename T, size_t M, size_t N,
+    access::address_space Space, access::decorated IsDecorated,
+    typename = std::enable_if_t<std::is_same_v<S, std::remove_const_t<T>>>>
+void load_accumulator_hip(
+    joint_matrix_hip<
+        S, sycl::ext::oneapi::experimental::matrix::use::accumulator, M, N,
+        sycl::ext::oneapi::experimental::matrix::layout::dynamic> &res,
+    multi_ptr<T, Space, IsDecorated> src, size_t stride,
+    sycl::ext::oneapi::experimental::matrix::layout Layout, Group &sg) {
+  if (Layout == sycl::ext::oneapi::experimental::matrix::layout::row_major)
+    load_accumulator_gfx11<
+        sycl::ext::oneapi::experimental::matrix::layout::row_major>(res, src,
+                                                                    stride, sg);
+  else
+    load_accumulator_gfx11<
+        sycl::ext::oneapi::experimental::matrix::layout::col_major>(res, src,
+                                                                    stride, sg);
+}
+
+template <
+    typename Group, typename S, typename T, size_t M, size_t N,
+    sycl::ext::oneapi::experimental::matrix::use Use,
+    sycl::ext::oneapi::experimental::matrix::layout Layout,
+    access::address_space Space, access::decorated IsDecorated,
+    typename = typename std::enable_if_t<
+        (Layout == sycl::ext::oneapi::experimental::matrix::layout::row_major ||
+         Layout ==
+             sycl::ext::oneapi::experimental::matrix::layout::col_major) &&
+        std::is_same_v<S, std::remove_const_t<T>>>>
+void load_multiplicand_hip(joint_matrix_hip<S, Use, M, N, Layout> &res,
+                           multi_ptr<T, Space, IsDecorated> src, size_t stride,
+                           Group &sg) {
+  const size_t MatrixLane = sg.get_local_linear_id() % GFX11_WMMA_TILE_SIZE;
+
+  for (size_t I = 0; I < res.wi_marray.size(); ++I) {
+    size_t Row;
+    size_t Col;
+    if constexpr (Use == sycl::ext::oneapi::experimental::matrix::use::a) {
+      Row = MatrixLane;
+      Col = I;
+    } else {
+      Row = I;
+      Col = MatrixLane;
+    }
+
+    if constexpr (Layout ==
+                  sycl::ext::oneapi::experimental::matrix::layout::row_major)
+      res.wi_marray[I] = src[Row * stride + Col];
+    else
+      res.wi_marray[I] = src[Col * stride + Row];
+  }
+}
+
+template <typename Group,
+          sycl::ext::oneapi::experimental::matrix::layout Layout, typename T,
+          access::address_space Space, access::decorated IsDecorated>
+void store_accumulator_gfx11(
+    const joint_matrix_hip<
+        T, sycl::ext::oneapi::experimental::matrix::use::accumulator,
+        GFX11_WMMA_TILE_SIZE, GFX11_WMMA_TILE_SIZE,
+        sycl::ext::oneapi::experimental::matrix::layout::dynamic> &src,
+    multi_ptr<T, Space, IsDecorated> dst, size_t stride, Group &sg) {
+  const size_t Lane = sg.get_local_linear_id();
+  const size_t Col = Lane % GFX11_WMMA_TILE_SIZE;
+  const size_t RowOffset = Lane / GFX11_WMMA_TILE_SIZE;
+
+  for (size_t I = 0; I < src.wi_marray.size(); ++I) {
+    const size_t Row = 2 * I + RowOffset;
+    if constexpr (Layout ==
+                  sycl::ext::oneapi::experimental::matrix::layout::row_major)
+      dst[Row * stride + Col] = src.wi_marray[I];
+    else
+      dst[Col * stride + Row] = src.wi_marray[I];
+  }
+}
+
+template <typename Group, typename T, size_t M, size_t N,
+          access::address_space Space, access::decorated IsDecorated>
+void joint_matrix_store_hip(
+    const joint_matrix_hip<
+        T, sycl::ext::oneapi::experimental::matrix::use::accumulator, M, N,
+        sycl::ext::oneapi::experimental::matrix::layout::dynamic> &src,
+    multi_ptr<T, Space, IsDecorated> dst, size_t stride,
+    sycl::ext::oneapi::experimental::matrix::layout Layout, Group &sg) {
+  if (Layout == sycl::ext::oneapi::experimental::matrix::layout::row_major)
+    store_accumulator_gfx11<
+        Group, sycl::ext::oneapi::experimental::matrix::layout::row_major>(
+        src, dst, stride, sg);
+  else
+    store_accumulator_gfx11<
+        Group, sycl::ext::oneapi::experimental::matrix::layout::col_major>(
+        src, dst, stride, sg);
+}
+
+typedef _Float16 gfx11_half16 __attribute__((ext_vector_type(16)));
+typedef short gfx11_short16 __attribute__((ext_vector_type(16)));
+typedef float gfx11_float8 __attribute__((ext_vector_type(8)));
+typedef int gfx11_int4 __attribute__((ext_vector_type(4)));
+typedef int gfx11_int8 __attribute__((ext_vector_type(8)));
+
+template <typename Tm, typename Tc, std::size_t M, std::size_t K, std::size_t N,
+          sycl::ext::oneapi::experimental::matrix::layout LayoutA,
+          sycl::ext::oneapi::experimental::matrix::layout LayoutB>
+void joint_matrix_mad_hip(
+    joint_matrix_hip<
+        Tc, sycl::ext::oneapi::experimental::matrix::use::accumulator, M, N,
+        sycl::ext::oneapi::experimental::matrix::layout::dynamic> &D,
+    const joint_matrix_hip<Tm, sycl::ext::oneapi::experimental::matrix::use::a,
+                           M, K, LayoutA> &A,
+    const joint_matrix_hip<Tm, sycl::ext::oneapi::experimental::matrix::use::b,
+                           K, N, LayoutB> &B,
+    const joint_matrix_hip<
+        Tc, sycl::ext::oneapi::experimental::matrix::use::accumulator, M, N,
+        sycl::ext::oneapi::experimental::matrix::layout::dynamic> &C) {
+  if constexpr (std::is_same_v<Tm, sycl::half> && std::is_same_v<Tc, float>) {
+    gfx11_half16 AData;
+    gfx11_half16 BData;
+    gfx11_float8 CData;
+    std::memcpy(&AData, &A.wi_marray, sizeof(AData));
+    std::memcpy(&BData, &B.wi_marray, sizeof(BData));
+    std::memcpy(&CData, &C.wi_marray, sizeof(CData));
+    auto Result =
+        __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(AData, BData, CData);
+    std::memcpy(&D.wi_marray, &Result, sizeof(Result));
+  } else if constexpr (std::is_same_v<Tm, bfloat16> &&
+                       std::is_same_v<Tc, float>) {
+    gfx11_short16 AData;
+    gfx11_short16 BData;
+    gfx11_float8 CData;
+    std::memcpy(&AData, &A.wi_marray, sizeof(AData));
+    std::memcpy(&BData, &B.wi_marray, sizeof(BData));
+    std::memcpy(&CData, &C.wi_marray, sizeof(CData));
+    auto Result =
+        __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(AData, BData, CData);
+    std::memcpy(&D.wi_marray, &Result, sizeof(Result));
+  } else if constexpr (std::is_same_v<Tm, int8_t> &&
+                       std::is_same_v<Tc, int32_t>) {
+    gfx11_int4 AData;
+    gfx11_int4 BData;
+    gfx11_int8 CData;
+    std::memcpy(&AData, &A.wi_marray, sizeof(AData));
+    std::memcpy(&BData, &B.wi_marray, sizeof(BData));
+    std::memcpy(&CData, &C.wi_marray, sizeof(CData));
+    auto Result = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32(
+        true, AData, true, BData, CData, false);
+    std::memcpy(&D.wi_marray, &Result, sizeof(Result));
+  }
+}
+
+#endif
 
 } // namespace detail
 } // namespace oneapi
