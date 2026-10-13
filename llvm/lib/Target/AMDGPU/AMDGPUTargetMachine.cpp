@@ -1130,6 +1130,11 @@ void AMDGPUTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
                                             ThinOrFullLTOPhase Phase) {
     if (Level != OptimizationLevel::O0) {
       if (!isLTOPreLink(Phase)) {
+        // The offset builtin is resolved during SYCL lowering. Leaving it
+        // external makes the attributor infer unnecessary hostcall arguments.
+        if (getTargetTriple().isAMDGCN() &&
+            getTargetTriple().getOS() == Triple::AMDHSA)
+          MPM.addPass(GlobalOffsetPass());
         if (EnableAMDGPUAttributor && getTargetTriple().isAMDGCN()) {
           AMDGPUAttributorOptions Opts;
           MPM.addPass(AMDGPUAttributorPass(*this, Opts, Phase));
@@ -1177,6 +1182,8 @@ void AMDGPUTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
             PM.addPass(GlobalDCEPass());
           }
           if (EnableAMDGPUAttributor && getTargetTriple().isAMDGCN()) {
+            if (getTargetTriple().getOS() == Triple::AMDHSA)
+              PM.addPass(GlobalOffsetPass());
             AMDGPUAttributorOptions Opt;
             if (HasClosedWorldAssumption)
               Opt.IsClosedWorld = true;
